@@ -9,6 +9,7 @@ import static io.debezium.connector.sqlserver.SqlServerConnectorConfig.SNAPSHOT_
 import static org.fest.assertions.Assertions.assertThat;
 import static org.junit.Assert.assertNull;
 
+import io.debezium.connector.sqlserver.util.SourceRecordAsserter;
 import java.math.BigDecimal;
 import java.sql.SQLException;
 import java.util.Arrays;
@@ -17,6 +18,7 @@ import java.util.Map;
 
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.fest.assertions.Assertions;
@@ -252,6 +254,47 @@ public class SnapshotIT extends AbstractConnectorTest {
         final SourceRecord record = consumeRecord();
         
         Assertions.assertThat(record.topic()).startsWith("__debezium-heartbeat");
+    }
+
+    @Test
+    public void blacklistColumn() throws Exception {
+        connection = TestHelper.testConnection();
+        connection.execute(
+                "CREATE TABLE table_blacklist_column_test (id int, name varchar(30), amount integer, ts datetime2(0), primary key(id))"
+        );
+        connection.execute("INSERT INTO table_blacklist_column_test VALUES(10, 'some_name', 120, '2018-07-18 13:28:56')");
+        TestHelper.enableTableCdc(connection, "table_blacklist_column_test");
+
+        final Configuration config = TestHelper.defaultConfig()
+                .with(SqlServerConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL)
+                .with(SqlServerConnectorConfig.COLUMN_BLACKLIST, "testDB.dbo.table_blacklist_column_test.ts")
+                .with(SqlServerConnectorConfig.TABLE_WHITELIST, "dbo.table_blacklist_column_test")
+                .build();
+
+        start(SqlServerConnector.class, config);
+        assertConnectorIsRunning();
+
+        final SourceRecords records = consumeRecordsByTopic(1);
+        final List<SourceRecord> tableA = records.recordsForTopic("server1.dbo.table_blacklist_column_test");
+
+        Schema expectedSchemaA = SchemaBuilder.struct()
+                .optional()
+                .name("server1.testDB.dbo.table_blacklist_column_test.Value")
+                .field("id", Schema.INT32_SCHEMA)
+                .field("name", Schema.STRING_SCHEMA)
+                .field("amount", Schema.INT32_SCHEMA)
+                .build();
+        Struct expectedValueA = new Struct(expectedSchemaA)
+                .put("id", 10)
+                .put("name", "some_name")
+                .put("amount", 120);
+
+        Assertions.assertThat(tableA).hasSize(1);
+        SourceRecordAsserter.assertThat(tableA.get(0))
+                .valueAfterFieldIsEqualTo(expectedValueA)
+                .valueAfterFieldSchemaIsEqualTo(expectedSchemaA);
+
+        stopConnector();
     }
 
     private void assertRecord(Struct record, List<SchemaAndValueField> expected) {

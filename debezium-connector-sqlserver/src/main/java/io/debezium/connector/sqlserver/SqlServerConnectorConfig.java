@@ -5,6 +5,9 @@
  */
 package io.debezium.connector.sqlserver;
 
+import io.debezium.relational.ColumnId;
+import io.debezium.relational.Selectors;
+import java.util.function.Predicate;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
@@ -209,12 +212,25 @@ public class SqlServerConnectorConfig extends HistorizedRelationalDatabaseConnec
                 + "Using a value of '" + SnapshotLockingMode.EXCLUSIVE.getValue() + "' ensures that the connector holds the exlusive lock (and thus prevents any reads and updates) for all monitored tables.");
 
     /**
+     * A comma-separated list of regular expressions that match fully-qualified names of columns to be excluded from monitoring
+     * and change messages. Fully-qualified names for columns are of the form {@code <databaseName>.<tableName>.<columnName>}
+     * or {@code <databaseName>.<schemaName>.<tableName>.<columnName>}.
+     */
+    public static final Field COLUMN_BLACKLIST = Field.create("column.blacklist")
+            .withDisplayName("Exclude Columns")
+            .withType(Type.STRING)
+            .withWidth(Width.LONG)
+            .withImportance(Importance.MEDIUM)
+            .withDescription("");
+
+    /**
      * The set of {@link Field}s defined as part of this configuration.
      */
     public static Field.Set ALL_FIELDS = Field.setOf(
             LOGICAL_NAME,
             DATABASE_NAME,
             SNAPSHOT_MODE,
+            COLUMN_BLACKLIST,
             HistorizedRelationalDatabaseConnectorConfig.DATABASE_HISTORY,
             RelationalDatabaseConnectorConfig.TABLE_WHITELIST,
             RelationalDatabaseConnectorConfig.TABLE_BLACKLIST,
@@ -235,6 +251,7 @@ public class SqlServerConnectorConfig extends HistorizedRelationalDatabaseConnec
                 KafkaDatabaseHistory.RECOVERY_POLL_INTERVAL_MS, HistorizedRelationalDatabaseConnectorConfig.DATABASE_HISTORY);
         Field.group(config, "Events", RelationalDatabaseConnectorConfig.TABLE_WHITELIST,
                 RelationalDatabaseConnectorConfig.TABLE_BLACKLIST,
+                COLUMN_BLACKLIST,
                 RelationalDatabaseConnectorConfig.TABLE_IGNORE_BUILTIN,
                 Heartbeat.HEARTBEAT_INTERVAL, Heartbeat.HEARTBEAT_TOPICS_PREFIX
         );
@@ -247,6 +264,7 @@ public class SqlServerConnectorConfig extends HistorizedRelationalDatabaseConnec
     private final String databaseName;
     private final SnapshotMode snapshotMode;
     private final SnapshotLockingMode snapshotLockingMode;
+    private final Predicate<ColumnId> columnFilter;
 
     public SqlServerConnectorConfig(Configuration config) {
         super(config, config.getString(LOGICAL_NAME), new SystemTablesPredicate(), x -> x.schema() + "." + x.table());
@@ -254,6 +272,7 @@ public class SqlServerConnectorConfig extends HistorizedRelationalDatabaseConnec
         this.databaseName = config.getString(DATABASE_NAME);
         this.snapshotMode = SnapshotMode.parse(config.getString(SNAPSHOT_MODE), SNAPSHOT_MODE.defaultValueAsString());
         this.snapshotLockingMode = SnapshotLockingMode.parse(config.getString(SNAPSHOT_LOCKING_MODE), SNAPSHOT_LOCKING_MODE.defaultValueAsString());
+        this.columnFilter = Selectors.excludeColumns(config.getString(COLUMN_BLACKLIST));
     }
 
     public String getDatabaseName() {
@@ -266,6 +285,10 @@ public class SqlServerConnectorConfig extends HistorizedRelationalDatabaseConnec
 
     public SnapshotMode getSnapshotMode() {
         return snapshotMode;
+    }
+
+    public Predicate<ColumnId> getColumnFilter() {
+        return columnFilter;
     }
 
     private static class SystemTablesPredicate implements TableFilter {

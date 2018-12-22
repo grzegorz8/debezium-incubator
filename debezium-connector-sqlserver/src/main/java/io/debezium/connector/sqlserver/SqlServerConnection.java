@@ -6,6 +6,16 @@
 
 package io.debezium.connector.sqlserver;
 
+import avro.shaded.com.google.common.collect.ImmutableList;
+import com.microsoft.sqlserver.jdbc.SQLServerDriver;
+import io.debezium.config.Configuration;
+import io.debezium.jdbc.JdbcConfiguration;
+import io.debezium.jdbc.JdbcConnection;
+import io.debezium.relational.Column;
+import io.debezium.relational.ColumnEditor;
+import io.debezium.relational.ColumnId;
+import io.debezium.relational.Table;
+import io.debezium.relational.TableId;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -16,20 +26,11 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
-
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.microsoft.sqlserver.jdbc.SQLServerDriver;
-
-import io.debezium.config.Configuration;
-import io.debezium.jdbc.JdbcConfiguration;
-import io.debezium.jdbc.JdbcConnection;
-import io.debezium.relational.Column;
-import io.debezium.relational.ColumnEditor;
-import io.debezium.relational.Table;
-import io.debezium.relational.TableId;
 
 /**
  * {@link JdbcConnection} extension to be used with Microsoft SQL Server
@@ -46,10 +47,16 @@ public class SqlServerConnection extends JdbcConnection {
     private static final String LOCK_TABLE = "SELECT * FROM # WITH (TABLOCKX)";
     private static final String LSN_TO_TIMESTAMP = "SELECT sys.fn_cdc_map_lsn_to_time(?)";
     private static final String INCREMENT_LSN = "SELECT sys.fn_cdc_increment_lsn(?)";
-    private static final String GET_ALL_CHANGES_FOR_TABLE = "SELECT * FROM cdc.fn_cdc_get_all_changes_#(ISNULL(?,sys.fn_cdc_get_min_lsn('#')), ?, N'all update old')";
+    private static final String GET_ALL_CHANGES_FOR_TABLE = "SELECT %s FROM cdc.fn_cdc_get_all_changes_#(ISNULL(?,sys.fn_cdc_get_min_lsn('#')), ?, N'all update old')";
     private static final String GET_LIST_OF_CDC_ENABLED_TABLES = "EXEC sys.sp_cdc_help_change_data_capture";
     private static final String GET_LIST_OF_NEW_CDC_ENABLED_TABLES = "SELECT * FROM cdc.change_tables WHERE start_lsn BETWEEN ? AND ?";
     private static final String GET_LIST_OF_KEY_COLUMNS = "SELECT * FROM cdc.index_columns WHERE object_id=?";
+    private static final List<String> CDC_SPECIFIC_COLUMNS = ImmutableList.<String>builder()
+            .add("__$start_lsn")
+            .add("__$seqval")
+            .add("__$operation")
+            .add("__$update_mask")
+            .build();
 
     private static final int CHANGE_TABLE_DATA_COLUMN_OFFSET = 5;
 
@@ -105,19 +112,33 @@ public class SqlServerConnection extends JdbcConnection {
     /**
      * Provides all changes recorder by the SQL Server CDC capture process for a set of tables.
      *
+     * @param schema - TODO
      * @param changeTables - the requested tables to obtain changes for
      * @param intervalFromLsn - closed lower bound of interval of changes to be provided
      * @param intervalToLsn  - closed upper bound of interval  of changes to be provided
      * @param consumer - the change processor
      * @throws SQLException
      */
-    public void getChangesForTables(ChangeTable[] changeTables, Lsn intervalFromLsn, Lsn intervalToLsn, BlockingMultiResultSetConsumer consumer) throws SQLException, InterruptedException {
+    public void getChangesForTables(SqlServerDatabaseSchema schema, Predicate<ColumnId> columnFilter, ChangeTable[] changeTables, Lsn intervalFromLsn, Lsn intervalToLsn, BlockingMultiResultSetConsumer consumer) throws SQLException, InterruptedException {
         final String[] queries = new String[changeTables.length];
         final StatementPreparer[] preparers = new StatementPreparer[changeTables.length];
 
         int idx = 0;
         for (ChangeTable changeTable: changeTables) {
-            final String query = GET_ALL_CHANGES_FOR_TABLE.replace(STATEMENTS_PLACEHOLDER, changeTable.getCaptureInstance());
+            TableId tableId = changeTable.getSourceTableId();
+            Table table = schema.tableFor(tableId);
+
+            String columnsToFetch = Stream.concat(
+                    CDC_SPECIFIC_COLUMNS.stream(),
+                    table.columnNames().stream()
+                            .filter(columnName -> columnFilter
+                                    .test(new ColumnId(tableId, columnName)))
+            )
+                    .map(columnName -> String.format("[%s]", columnName))
+                    .collect(Collectors.joining(","));
+
+            final String query = String.format(GET_ALL_CHANGES_FOR_TABLE
+                    .replace(STATEMENTS_PLACEHOLDER, changeTable.getCaptureInstance()), columnsToFetch);
             queries[idx] = query;
             // If the table was added in the middle of queried buffer we need
             // to adjust from to the first LSN available

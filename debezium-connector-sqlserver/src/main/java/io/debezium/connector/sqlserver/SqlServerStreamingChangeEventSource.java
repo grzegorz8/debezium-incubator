@@ -113,7 +113,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                     }
                 }
                 try {
-                    connection.getChangesForTables(tablesSlot.get(), fromLsn, currentMaxLsn, resultSets -> {
+                    connection.getChangesForTables(schema, connectorConfig.getColumnFilter(), tablesSlot.get(), fromLsn, currentMaxLsn, resultSets -> {
 
                         final int tableCount = resultSets.length;
                         final ChangeTablePointer[] changeTables = new ChangeTablePointer[tableCount];

@@ -11,7 +11,6 @@ import org.slf4j.LoggerFactory;
 import io.debezium.relational.HistorizedRelationalDatabaseSchema;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
-import io.debezium.relational.TableSchemaBuilder;
 import io.debezium.relational.ddl.DdlParser;
 import io.debezium.relational.history.TableChanges;
 import io.debezium.schema.SchemaChangeEvent;
@@ -29,8 +28,8 @@ public class SqlServerDatabaseSchema extends HistorizedRelationalDatabaseSchema 
     private static final Logger LOGGER = LoggerFactory.getLogger(SqlServerDatabaseSchema.class);
 
     public SqlServerDatabaseSchema(SqlServerConnectorConfig connectorConfig, SchemaNameAdjuster schemaNameAdjuster, TopicSelector<TableId> topicSelector, SqlServerConnection connection) {
-        super(connectorConfig, topicSelector, connectorConfig.getTableFilters().dataCollectionFilter(), null,
-                new TableSchemaBuilder(
+        super(connectorConfig, topicSelector, connectorConfig.getTableFilters().dataCollectionFilter(), connectorConfig.getColumnFilter(),
+                new SqlServerTableSchemaBuilder(
                         new SqlServerValueConverters(connectorConfig.getDecimalMode()),
                         schemaNameAdjuster,
                         SourceInfo.SCHEMA

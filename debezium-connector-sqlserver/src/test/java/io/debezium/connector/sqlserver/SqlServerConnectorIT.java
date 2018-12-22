@@ -8,25 +8,25 @@ package io.debezium.connector.sqlserver;
 import static org.fest.assertions.Assertions.assertThat;
 import static org.junit.Assert.assertNull;
 
+import io.debezium.config.Configuration;
+import io.debezium.connector.sqlserver.SqlServerConnectorConfig.SnapshotMode;
+import io.debezium.connector.sqlserver.util.SourceRecordAsserter;
+import io.debezium.connector.sqlserver.util.TestHelper;
+import io.debezium.data.SchemaAndValueField;
+import io.debezium.doc.FixFor;
+import io.debezium.embedded.AbstractConnectorTest;
+import io.debezium.util.Testing;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.List;
-
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.fest.assertions.Assertions;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-
-import io.debezium.config.Configuration;
-import io.debezium.connector.sqlserver.SqlServerConnectorConfig.SnapshotMode;
-import io.debezium.connector.sqlserver.util.TestHelper;
-import io.debezium.data.SchemaAndValueField;
-import io.debezium.doc.FixFor;
-import io.debezium.embedded.AbstractConnectorTest;
-import io.debezium.util.Testing;
 
 /**
  * Integration test for the Debezium SQL Server connector.
@@ -316,6 +316,62 @@ public class SqlServerConnectorIT extends AbstractConnectorTest {
         final List<SourceRecord> tableB = records.recordsForTopic("server1.dbo.tableb");
         Assertions.assertThat(tableA == null || tableA.isEmpty()).isTrue();
         Assertions.assertThat(tableB).hasSize(RECORDS_PER_TABLE);
+
+        stopConnector();
+    }
+
+    @Test
+    public void blacklistColumn() throws Exception {
+        connection = TestHelper.testConnection();
+        connection.execute(
+                "CREATE TABLE table_blacklist_column_test (id int, name varchar(30), amount integer, ts datetime2(0), primary key(id))"
+        );
+        TestHelper.enableTableCdc(connection, "table_blacklist_column_test");
+
+        final Configuration config = TestHelper.defaultConfig()
+                .with(SqlServerConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL_SCHEMA_ONLY)
+                .with(SqlServerConnectorConfig.COLUMN_BLACKLIST, "testDB.dbo.table_blacklist_column_test.ts,testDB.dbo.table_blacklist_column_test.amount")
+                .build();
+
+        start(SqlServerConnector.class, config);
+        assertConnectorIsRunning();
+
+        connection.execute("INSERT INTO table_blacklist_column_test VALUES(10, 'some_name', 120, '2018-07-18 13:28:56')");
+//        connection.execute("INSERT INTO tablea VALUES(10, 'a')");
+
+        final SourceRecords records = consumeRecordsByTopic(1);
+        final List<SourceRecord> tableA = records.recordsForTopic("server1.dbo.table_blacklist_column_test");
+//        final List<SourceRecord> tableB = records.recordsForTopic("server1.dbo.tableb");
+
+        Schema expectedSchemaA = SchemaBuilder.struct()
+                .optional()
+                .name("server1.testDB.dbo.table_blacklist_column_test.Value")
+                .field("id", Schema.INT32_SCHEMA)
+                .field("name", Schema.STRING_SCHEMA)
+                .field("amount", Schema.INT32_SCHEMA)
+                .build();
+        Struct expectedValueA = new Struct(expectedSchemaA)
+                .put("id", 10)
+                .put("name", "some_name")
+                .put("amount", 120);
+
+//        Schema expectedSchemaB = SchemaBuilder.struct()
+//                .optional()
+//                .name("server1.testDB.dbo.tableb.Value")
+//                .field("id", Schema.INT32_SCHEMA)
+//                .field("colb", Schema.STRING_SCHEMA)
+//                .build();
+//        Struct expectedValueB = new Struct(expectedSchemaB).put("id", 100).put("colb", "b");
+
+        Assertions.assertThat(tableA).hasSize(1);
+        SourceRecordAsserter.assertThat(tableA.get(0))
+                .valueAfterFieldIsEqualTo(expectedValueA)
+                .valueAfterFieldSchemaIsEqualTo(expectedSchemaA);
+
+//        Assertions.assertThat(tableB).hasSize(1);
+//        SourceRecordAsserter.assertThat(tableB.get(0))
+//                .valueAfterFieldIsEqualTo(expectedValueB)
+//                .valueAfterFieldSchemaIsEqualTo(expectedSchemaB);
 
         stopConnector();
     }

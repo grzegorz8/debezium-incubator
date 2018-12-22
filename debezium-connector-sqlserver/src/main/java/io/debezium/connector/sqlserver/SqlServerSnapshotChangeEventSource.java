@@ -5,6 +5,8 @@
  */
 package io.debezium.connector.sqlserver;
 
+import io.debezium.relational.ColumnId;
+import io.debezium.relational.Tables.ColumnNameFilter;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -12,6 +14,7 @@ import java.sql.Savepoint;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -157,7 +160,15 @@ public class SqlServerSnapshotChangeEventSource extends HistorizedRelationalSnap
                     snapshotContext.catalogName,
                     schema,
                     connectorConfig.getTableFilters().dataCollectionFilter(),
-                    null,
+                    // TODO keep it or remove?
+                    new ColumnNameFilter() {
+                        @Override
+                        public boolean matches(String catalogName, String schemaName,
+                                String tableName, String columnName) {
+
+                            return true;
+                        }
+                    },
                     false
             );
         }
@@ -175,7 +186,17 @@ public class SqlServerSnapshotChangeEventSource extends HistorizedRelationalSnap
 
     @Override
     protected String getSnapshotSelect(SnapshotContext snapshotContext, TableId tableId) {
-        return String.format("SELECT * FROM [%s].[%s]", tableId.schema(), tableId.table());
+        Table table = snapshotContext.tables.forTable(tableId);
+
+        Predicate<ColumnId> columnFilter = connectorConfig.getColumnFilter();
+        String columnsToFetch = table.columnNames().stream()
+                .filter(columnName -> columnFilter.test(new ColumnId(tableId, columnName)))
+                .map(columnName -> String.format("[%s]", columnName))
+                .collect(Collectors.joining(","));
+        // TODO uncomment
+        return String.format("SELECT %s FROM [%s].[%s]", columnsToFetch, tableId.schema(), tableId.table());
+
+//        return String.format("SELECT * FROM [%s].[%s]", tableId.schema(), tableId.table());
     }
 
     @Override
